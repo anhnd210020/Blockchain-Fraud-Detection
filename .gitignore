@@ -1,3 +1,6 @@
 *.pkl
 *.pt
 data/
+*.csv
+# ignore CSV
+*.csv

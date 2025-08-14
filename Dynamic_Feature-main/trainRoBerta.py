@@ -5,19 +5,20 @@ import pickle as pkl
 import random
 import time
 from scipy.sparse import csr_matrix
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
-# use pytorch_pretrained_bert.modeling for huggingface transformers 0.6.2
-from pytorch_pretrained_bert.optimization import BertAdam  # , warmup_linear
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-
-# from tqdm import tqdm, trange
+# Use modern transformers library
+from transformers import RobertaTokenizer, get_linear_schedule_with_warmup
+from torch.optim import AdamW
 from sklearn.metrics import classification_report, f1_score, precision_score, recall_score
 
 from env_config import env_config
-from ETH_GBert import ETH_GBertModel
+from ETH_GRoBERTa import ETH_GRoBERTaModel
 from utils import *
+
 random.seed(env_config.GLOBAL_SEED)
 np.random.seed(env_config.GLOBAL_SEED)
 torch.manual_seed(env_config.GLOBAL_SEED)
@@ -26,7 +27,6 @@ cuda_yes = torch.cuda.is_available()
 if cuda_yes:
     torch.cuda.manual_seed_all(env_config.GLOBAL_SEED)
 device = torch.device("cuda:0" if cuda_yes else "cpu")
-
 
 """
 Configuration
@@ -38,7 +38,7 @@ parser.add_argument("--sw", type=int, default="0")
 parser.add_argument("--dim", type=int, default="16")
 parser.add_argument("--lr", type=float, default=1e-5)
 parser.add_argument("--l2", type=float, default=0.01)
-parser.add_argument("--model", type=str, default="ETH_GBert")
+parser.add_argument("--model", type=str, default="ETH_GRoBERTa")
 parser.add_argument("--validate_program", action="store_true")
 args = parser.parse_args()
 args.ds = args.ds
@@ -49,23 +49,21 @@ gcn_embedding_dim = args.dim
 learning_rate0 = args.lr
 l2_decay = args.l2
 dataset_list = {"Dataset"}
-total_train_epochs = 9
-dropout_rate = 0.2  # 0.5 # Dropout rate (1 - keep probability).
+total_train_epochs = 9  # Paper suggests 40 (page 8), consider adjusting
+dropout_rate = 0.2
 if args.ds == "Dataset":
-    batch_size = 16  # 129
-    learning_rate0 = 8e-6  # 2e-5
+    batch_size = 16  # Paper uses 32 (page 8), adjust if needed
+    learning_rate0 = 8e-6
     l2_decay = 0.001
 MAX_SEQ_LENGTH = 200 + gcn_embedding_dim
 gradient_accumulation_steps = 1
-# bert_model_scale='bert-large-uncased'
-bert_model_scale = "bert-base-uncased"
+bert_model_scale = "roberta-base"  # Changed to RoBERTa
 
 if env_config.TRANSFORMERS_OFFLINE == 1:
     bert_model_scale = os.path.join(
         env_config.HUGGING_LOCAL_MODEL_FILES_PATH,
         f"hf-maintainers_{bert_model_scale}",
     )
-do_lower_case = True
 warmup_proportion = 0.1
 data_dir = f"data/preprocessed/{args.ds}"
 output_dir = "./output/"
@@ -73,7 +71,7 @@ if not os.path.exists(output_dir):
     os.mkdir(output_dir)
 perform_metrics_str = ["weighted avg", "f1-score"]
 classifier_act_func = nn.ReLU()
-resample_train_set = False  # if mse and resample, then do resample
+resample_train_set = False
 do_softmax_before_mse = True
 cfg_loss_criterion = "cle"
 model_file_4save = (
@@ -89,19 +87,18 @@ print(
     "\n----- Configure -----",
     f"\n  args.ds: {args.ds}",
     f"\n  stop_words: {cfg_stop_words}",
-    # '\n  Vocab GCN_hidden_dim: 768 -> 1152 -> 768',
     f"\n  Vocab GCN_hidden_dim: vocab_size -> 128 -> {str(gcn_embedding_dim)}",
-    f"\n  Learning_rate0: {learning_rate0}" f"\n  weight_decay: {l2_decay}",
-    f"\n  Loss_criterion {cfg_loss_criterion}"
+    f"\n  Learning_rate0: {learning_rate0}",
+    f"\n  weight_decay: {l2_decay}",
+    f"\n  Loss_criterion {cfg_loss_criterion}",
     f"\n  softmax_before_mse: {do_softmax_before_mse}",
-    f"\n  Dropout: {dropout_rate}"
-    f"\n  gcn_act_func: Relu",
-    f"\n  MAX_SEQ_LENGTH: {MAX_SEQ_LENGTH}",  #'valid_data_taux',valid_data_taux
+    f"\n  Dropout: {dropout_rate}",
+    f"\n  gcn_act_func: ReLU",
+    f"\n  MAX_SEQ_LENGTH: {MAX_SEQ_LENGTH}",
     f"\n  perform_metrics_str: {perform_metrics_str}",
     f"\n  model_file_4save: {model_file_4save}",
     f"\n  validate_program: {args.validate_program}",
 )
-
 
 """
 Prepare data set
@@ -109,7 +106,7 @@ Load vocabulary adjacent matrix
 """
 print("\n----- Prepare data set -----")
 print(
-    f"  Load/shuffle/seperate {args.ds} dataset, and vocabulary graph adjacent matrix"
+    f"  Load/shuffle/separate {args.ds} dataset, and vocabulary graph adjacent matrix"
 )
 
 objects = []
@@ -164,23 +161,21 @@ valid_examples = [
 ]
 test_examples = [
     examples[i]
-    for i in indexs[
-        train_size + valid_size : train_size + valid_size + test_size
-    ]
+    for i in indexs[train_size + valid_size : train_size + valid_size + test_size]
 ]
 
 norm_gcn_vocab_adj_list = []
-import numpy as np
-import pickle
+
+# Define load_data function here
 def load_data(filename):
     with open(filename, 'rb') as file:
-        return pickle.load(file)
+        return pkl.load(file)
+
 weighted_adj_matrix = load_data('data/preprocessed/Dataset/weighted_adjacency_matrix.pkl')
 def adjust_matrix_size(adj_matrix, target_size):
     current_size = adj_matrix.shape[0]
     if current_size == target_size:
         return adj_matrix
-    
     if current_size > target_size:
         adj_matrix = adj_matrix[:target_size, :target_size]
     else:
@@ -189,12 +184,10 @@ def adjust_matrix_size(adj_matrix, target_size):
             [adj_matrix, np.zeros((current_size, target_size - current_size))],
             [np.zeros((target_size - current_size, current_size)), padding]
         ])
-    
     return adj_matrix
 
 adjusted_adj_matrix = adjust_matrix_size(weighted_adj_matrix, 9549)
-
-gcn_vocab_adj = csr_matrix(adjusted_adj_matrix )
+gcn_vocab_adj = csr_matrix(adjusted_adj_matrix)
 gcn_adj_list = [normalize_adj(gcn_vocab_adj).tocoo()]
 gcn_adj_list = [sparse_scipy2torch(adj).to(device) for adj in gcn_adj_list]
 import warnings
@@ -207,10 +200,7 @@ train_classes_num, train_classes_weight = get_class_count_and_weight(
 )
 loss_weight = torch.tensor(train_classes_weight, dtype=torch.float).to(device)
 
-tokenizer = BertTokenizer.from_pretrained(
-    bert_model_scale, do_lower_case=do_lower_case
-)
-
+tokenizer = RobertaTokenizer.from_pretrained(bert_model_scale)  # Changed to RobertaTokenizer
 
 def get_pytorch_dataloader(
     examples,
@@ -248,7 +238,7 @@ def get_pytorch_dataloader(
             else classes_weight[1]
             if label == 1
             else classes_weight[2]
-            for _, _, _, _, label in dataset
+            for _, _, _, _, label in ds  # Adjusted to match dataset structure
         ]
         sampler = WeightedRandomSampler(
             weights, num_samples=total_resample_size, replacement=True
@@ -260,7 +250,6 @@ def get_pytorch_dataloader(
             num_workers=4,
             collate_fn=ds.pad,
         )
-
 
 # ds size=1 for validating the program
 if args.validate_program:
@@ -278,8 +267,6 @@ test_dataloader = get_pytorch_dataloader(
     test_examples, tokenizer, batch_size, shuffle_choice=0
 )
 
-
-# total_train_steps = int(len(train_examples) / batch_size / gradient_accumulation_steps * total_train_epochs)
 total_train_steps = int(
     len(train_dataloader) / gradient_accumulation_steps * total_train_epochs
 )
@@ -293,12 +280,9 @@ print("  Num examples for validate = %d" % len(valid_examples))
 print("  Batch size = %d" % batch_size)
 print("  Num steps = %d" % total_train_steps)
 
-
 """
-Train ETH_GBert model
+Train ETH_GRoBERTa model
 """
-
-
 def predict(model, examples, tokenizer, batch_size):
     dataloader = get_pytorch_dataloader(
         examples, tokenizer, batch_size, shuffle_choice=0
@@ -309,31 +293,19 @@ def predict(model, examples, tokenizer, batch_size):
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             batch = tuple(t.to(device) for t in batch)
-            (
-                input_ids,
-                input_mask,
-                segment_ids,
-                _,
-                label_ids,
-                gcn_swop_eye,
-            ) = batch
-            score_out = model(
-                gcn_adj_list, gcn_swop_eye, input_ids, segment_ids, input_mask
+            (input_ids, input_mask, _, label_ids, gcn_swop_eye) = batch  # Removed segment_ids
+            logits = model(
+                gcn_adj_list, gcn_swop_eye, input_ids, input_mask
             )
             if cfg_loss_criterion == "mse" and do_softmax_before_mse:
-                score_out = torch.nn.functional.softmax(score_out, dim=-1)
-            predict_out.extend(score_out.max(1)[1].tolist())
-            confidence_out.extend(score_out.max(1)[0].tolist())
-
-    return np.array(predict_out).reshape(-1), np.array(confidence_out).reshape(
-        -1
-    )
-
+                logits = torch.nn.functional.softmax(logits, dim=-1)
+            predict_out.extend(logits.max(1)[1].tolist())
+            confidence_out.extend(logits.max(1)[0].tolist())
+    return np.array(predict_out).reshape(-1), np.array(confidence_out).reshape(-1)
 
 def evaluate(
     model, gcn_adj_list, predict_dataloader, batch_size, epoch_th, dataset_name
 ):
-    # print("***** Running prediction *****")
     model.eval()
     predict_out = []
     all_label_ids = []
@@ -344,41 +316,26 @@ def evaluate(
     with torch.no_grad():
         for batch in predict_dataloader:
             batch = tuple(t.to(device) for t in batch)
-            (
-                input_ids,
-                input_mask,
-                segment_ids,
-                y_prob,
-                label_ids,
-                gcn_swop_eye,
-            ) = batch
-            # the parameter label_ids is None, model return the prediction score
+            (input_ids, input_mask, _, label_ids, gcn_swop_eye) = batch  # Removed segment_ids
             logits = model(
-                gcn_adj_list, gcn_swop_eye, input_ids, segment_ids, input_mask
+                gcn_adj_list, gcn_swop_eye, input_ids, input_mask
             )
-
             if cfg_loss_criterion == "mse":
                 if do_softmax_before_mse:
                     logits = F.softmax(logits, -1)
-                loss = F.mse_loss(logits, y_prob)
+                loss = F.mse_loss(logits, label_ids.float())
             else:
                 if loss_weight is None:
-                    loss = F.cross_entropy(
-                        logits.view(-1, num_classes), label_ids
-                    )
+                    loss = F.cross_entropy(logits.view(-1, num_classes), label_ids)
                 else:
-                    loss = F.cross_entropy(
-                        logits.view(-1, num_classes), label_ids
-                    )
+                    loss = F.cross_entropy(logits.view(-1, num_classes), label_ids, weight=loss_weight)
             ev_loss += loss.item()
-
             _, predicted = torch.max(logits, -1)
             predict_out.extend(predicted.tolist())
             all_label_ids.extend(label_ids.tolist())
             eval_accuracy = predicted.eq(label_ids).sum().item()
             total += len(label_ids)
             correct += eval_accuracy
-
         f1_metrics = f1_score(
             np.array(all_label_ids).reshape(-1),
             np.array(predict_out).reshape(-1),
@@ -392,7 +349,6 @@ def evaluate(
                 digits=4,
             )
         )
-
     ev_acc = correct / total
     end = time.time()
     print(
@@ -409,8 +365,9 @@ def evaluate(
     print("--------------------------------------------------------------")
     return ev_loss, ev_acc, f1_metrics
 
-
 print("\n----- Running training -----")
+prev_save_step = -1
+start_epoch = 0
 if will_train_mode_from_checkpoint and os.path.exists(
     os.path.join(output_dir, model_file_4save)
 ):
@@ -425,7 +382,7 @@ if will_train_mode_from_checkpoint and os.path.exists(
         start_epoch = checkpoint["epoch"] + 1
     valid_acc_prev = checkpoint["valid_acc"]
     perform_metrics_prev = checkpoint["perform_metrics"]
-    model = ETH_GBertModel.from_pretrained(
+    model = ETH_GRoBERTaModel.from_pretrained(
         bert_model_scale,
         state_dict=checkpoint["model_state"],
         gcn_adj_dim=gcn_vocab_size,
@@ -447,36 +404,32 @@ if will_train_mode_from_checkpoint and os.path.exists(
         f"valid acc: {checkpoint['valid_acc']}",
         f"{' '.join(perform_metrics_str)}_valid: {checkpoint['perform_metrics']}",
     )
-
 else:
-    start_epoch = 0
     valid_acc_prev = 0
     perform_metrics_prev = 0
-    model = ETH_GBertModel.from_pretrained(
+    model = ETH_GRoBERTaModel.from_pretrained(
         bert_model_scale,
         gcn_adj_dim=gcn_vocab_size,
         gcn_adj_num=len(gcn_adj_list),
         gcn_embedding_dim=gcn_embedding_dim,
         num_labels=len(label2idx),
     )
-    prev_save_step = -1
-
 model.to(device)
 
-optimizer = BertAdam(
+optimizer = AdamW(
     model.parameters(),
     lr=learning_rate0,
-    warmup=warmup_proportion,
-    t_total=total_train_steps,
     weight_decay=l2_decay,
+)
+scheduler = get_linear_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=int(total_train_steps * warmup_proportion),
+    num_training_steps=total_train_steps
 )
 
 train_start = time.time()
 global_step_th = int(
-    len(train_examples)
-    / batch_size
-    / gradient_accumulation_steps
-    * start_epoch
+    len(train_examples) / batch_size / gradient_accumulation_steps * start_epoch
 )
 
 all_loss_list = {"train": [], "valid": [], "test": []}
@@ -486,7 +439,6 @@ for epoch in range(start_epoch, total_train_epochs):
     ep_train_start = time.time()
     model.train()
     optimizer.zero_grad()
-    # for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
     for step, batch in enumerate(train_dataloader):
         if prev_save_step > -1:
             if step <= prev_save_step:
@@ -494,38 +446,28 @@ for epoch in range(start_epoch, total_train_epochs):
         if prev_save_step > -1:
             prev_save_step = -1
         batch = tuple(t.to(device) for t in batch)
-        (
-            input_ids,
-            input_mask,
-            segment_ids,
-            y_prob,
-            label_ids,
-            gcn_swop_eye,
-        ) = batch
-
+        (input_ids, input_mask, _, y_prob, label_ids, gcn_swop_eye) = batch
         logits = model(
-            gcn_adj_list, gcn_swop_eye, input_ids, segment_ids, input_mask
+            gcn_adj_list, gcn_swop_eye, input_ids, input_mask
         )
-
         if cfg_loss_criterion == "mse":
             if do_softmax_before_mse:
                 logits = F.softmax(logits, -1)
-            loss = F.mse_loss(logits, y_prob)
+            loss = F.mse_loss(logits, label_ids.float())
         else:
             if loss_weight is None:
                 loss = F.cross_entropy(logits, label_ids)
             else:
                 loss = F.cross_entropy(
-                    logits.view(-1, num_classes), label_ids, loss_weight
+                    logits.view(-1, num_classes), label_ids, weight=loss_weight
                 )
-
         if gradient_accumulation_steps > 1:
             loss = loss / gradient_accumulation_steps
         loss.backward()
-
         tr_loss += loss.item()
         if (step + 1) % gradient_accumulation_steps == 0:
             optimizer.step()
+            scheduler.step()  # Added scheduler step
             optimizer.zero_grad()
             global_step_th += 1
         if step % 40 == 0:
@@ -539,7 +481,6 @@ for epoch in range(start_epoch, total_train_epochs):
                     (time.time() - train_start) / 60.0,
                 )
             )
-
     print("--------------------------------------------------------------")
     valid_loss, valid_acc, perform_metrics = evaluate(
         model, gcn_adj_list, valid_dataloader, batch_size, epoch, "Valid_set"
@@ -558,20 +499,16 @@ for epoch in range(start_epoch, total_train_epochs):
         )
     )
     # Save a checkpoint
-    # if valid_acc > valid_acc_prev:
     if perform_metrics > perform_metrics_prev:
         to_save = {
             "epoch": epoch,
             "model_state": model.state_dict(),
             "valid_acc": valid_acc,
-            "lower_case": do_lower_case,
             "perform_metrics": perform_metrics,
         }
         torch.save(to_save, os.path.join(output_dir, model_file_4save))
-        # valid_acc_prev = valid_acc
         perform_metrics_prev = perform_metrics
         test_f1_when_valid_best = test_f1
-        # train_f1_when_valid_best=tr_f1
         valid_f1_best_epoch = epoch
 
 print(
@@ -579,7 +516,7 @@ print(
     (time.time() - train_start) / 60.0,
 )
 print(
-    "**Valid weighted F1: %.3f at %d epoch."
+    "\n**Valid weighted F1: %.3f at %d epoch."
     % (100 * perform_metrics_prev, valid_f1_best_epoch)
 )
 print(
@@ -590,13 +527,13 @@ print(
 # on the validation set
 valid_pred, _ = predict(model, valid_examples, tokenizer, batch_size)
 valid_prec = precision_score(valid_y, valid_pred, average="weighted")
-valid_rec  = recall_score   (valid_y, valid_pred, average="weighted")
+valid_rec = recall_score(valid_y, valid_pred, average="weighted")
 print(f"**Valid weighted Precision: {100 * valid_prec:.3f}")
 print(f"**Valid weighted Recall:    {100 * valid_rec :.3f}")
 
 # on the test set
 test_pred, _ = predict(model, test_examples, tokenizer, batch_size)
 test_prec = precision_score(test_y, test_pred, average="weighted")
-test_rec  = recall_score   (test_y, test_pred, average="weighted")
+test_rec = recall_score(test_y, test_pred, average="weighted")
 print(f"**Test  weighted Precision: {100 * test_prec:.3f}")
 print(f"**Test  weighted Recall:    {100 * test_rec :.3f}")

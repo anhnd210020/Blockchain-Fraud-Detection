@@ -1,4 +1,3 @@
-
 import argparse
 import os
 import pickle as pkl
@@ -56,7 +55,7 @@ if cfg_ds in ("mr", "sst", "Dataset"):
 tfidf_mode = "only_tf"
 # tfidf_mode='all_tfidf'
 
-# 在clean doc时是否使用bert_tokenizer分词, data3时不用更好
+# Whether to use BERT tokenizer during document cleaning
 cfg_use_bert_tokenizer_at_clean = True
 
 # bert_model_scale='bert-large-uncased'
@@ -465,7 +464,7 @@ for key in word_pair_count:
             (1.0 * count / num_window)
             / (1.0 * word_freq_i * word_freq_j / (num_window * num_window))
         )
-        # 保证分子也不为零以避免负无穷的情况
+        # Ensure the numerator is non‑zero to avoid -inf
         if pmi > 0:
             npmi = (log(1.0 * word_freq_i * word_freq_j / (num_window * num_window)) / log(1.0 * count / num_window) - 1)
             if npmi > tmp_max_npmi:

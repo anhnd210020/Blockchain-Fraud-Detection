@@ -1,29 +1,29 @@
 import pickle
 
-# 从文件中读取数据
+# Load data from a file
 def load_data(filename):
     with open(filename, 'rb') as file:
         return pickle.load(file)
 
-# 保存数据到文件
+# Save data to a file
 def save_data(data, filename):
     with open(filename, 'wb') as file:
         pickle.dump(data, file)
 
-# 主处理函数
+# Main processing function
 def process_transactions(transactions):
-    # 创建一个字典来存储每个地址的交易
+    # Create a dictionary to store transactions for each address
     accounts = {}
 
-    # 处理交易数据
+    # Process each transaction
     for tx in transactions:
-        # 为“转出”交易添加
+        # Add "outgoing" transaction for sender
         from_address = tx['from_address']
         if from_address not in accounts:
             accounts[from_address] = []
         accounts[from_address].append({**tx, 'in_out': 1})  # 添加转出标志
 
-        # 为“转入”交易添加
+        # Add "incoming" transaction for receiver
         to_address = tx['to_address']
         if to_address not in accounts:
             accounts[to_address] = []
@@ -31,18 +31,18 @@ def process_transactions(transactions):
 
     return accounts
 
-# 加载数据
+# Load transaction data
 transactions = load_data('transactions1.pkl')
 
-# 处理数据
+# Process and organize data per account
 processed_data = process_transactions(transactions)
 
-# 保存数据
+# Save processed data to a new file
 save_data(processed_data, 'transactions2.pkl')
 
-# 打印前十行数据进行检查
-for address in list(processed_data.keys())[:10]:  # 只展示前十个账户的数据
-    print(f"账户 {address} 的交易记录:")
-    for transaction in processed_data[address][:5]:  # 每个账户显示前五条记录
+# Print the first five transactions for the first ten accounts for inspection
+for address in list(processed_data.keys())[:10]:  # Show only the first 10 accounts
+    print(f"Transactions for account {address}:")
+    for transaction in processed_data[address][:5]:  # Show first 5 transactions per account
         print(transaction)
     print("\n")
