@@ -33,7 +33,6 @@ conda create -n blockchain_fraud python=3.10
 conda activate blockchain_fraud
 pip install -r requirements.txt
 
-```markdown
 ## 🚀 Setup & Training
 
 ### 1. Clone the Repository
