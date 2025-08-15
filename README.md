@@ -1,4 +1,3 @@
-# Blockchain-Fraud-Detection
 # Dynamic Feature Fusion for Blockchain Fraud Detection
 
 This repository implements the **ETH-GBERT** model from the paper *"Dynamic Feature Fusion: Combining Global Graph Structures and Local Semantics for Blockchain Fraud Detection"* by Zhang Sheng, Liangliang Song, and Yanbin Wang ([arXiv:2501.02032v1](https://arxiv.org/abs/2501.02032)).  
@@ -32,6 +31,9 @@ Create a Conda environment and install dependencies:
 conda create -n blockchain_fraud python=3.10
 conda activate blockchain_fraud
 pip install -r requirements.txt
+```
+
+---
 
 ## 🚀 Setup & Training
 
@@ -92,5 +94,3 @@ python train_svm.py --ds Dataset
 
 ### 6. Evaluation
 All training scripts output classification reports with **Weighted F1**, **Precision**, and **Recall** for both validation and test sets.
-```
-
