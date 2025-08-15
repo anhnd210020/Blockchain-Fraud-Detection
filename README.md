@@ -32,3 +32,66 @@ Create a Conda environment and install dependencies:
 conda create -n blockchain_fraud python=3.10
 conda activate blockchain_fraud
 pip install -r requirements.txt
+
+```markdown
+## 🚀 Setup & Training
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/your_username/Dynamic_Feature_Fusion_Blockchain_Fraud.git
+cd Dynamic_Feature_Fusion_Blockchain_Fraud
+```
+
+### 2. Prepare Data
+- Place raw blockchain transaction data in the appropriate directory.
+- Run the preprocessing pipeline:
+```bash
+python prepare_data.py
+```
+- Preprocessed files will be saved in:
+```
+data/preprocessed/Dataset/
+```
+(e.g., `weighted_adjacency_matrix.pkl`, `shuffled_clean_docs`).
+
+### 3. Configure Environment
+- Edit `env_config.py` to set:
+  - Random seeds  
+  - Data paths  
+  - Offline mode for transformers (if required)
+
+---
+
+### 4. Train ETH-GBERT
+```bash
+python train.py --ds Dataset --dim 16 --lr 8e-6 --l2 0.001
+```
+**Options:**
+- `--load 1` → Resume training from checkpoint  
+- `--validate_program` → Quick validation (1 epoch)
+
+📂 Checkpoints are saved in:
+```
+./output/
+```
+Logs include loss curves and evaluation metrics.
+
+---
+
+### 5. Train Baselines
+**Random Forest**:
+```bash
+python train_random_forest.py --ds Dataset
+```
+
+**SVM**:
+```bash
+python train_svm.py --ds Dataset
+```
+
+---
+
+### 6. Evaluation
+All training scripts output classification reports with **Weighted F1**, **Precision**, and **Recall** for both validation and test sets.
+```
+
